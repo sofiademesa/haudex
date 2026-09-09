@@ -1,0 +1,23 @@
+name: m5a5_haudex_app
+description: Module 5 - Activity 5 - HAUDEX App (Flutter).
+version: 1.0.0
+publish_to: none
+
+environment:
+  sdk: ^3.0.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Live mobile preview while you run the app (a phone frame with a device
+  # switcher). It does not affect grading.
+  device_preview: ^1.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  # Used by the grader to photograph your screen inside a phone frame.
+  device_frame: ^1.2.0
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,159 @@
+name: Autograde
+
+# Runs the test suite on every push so graders see a pass/fail at a glance, and
+# renders a phone-framed screenshot of your screen (uploaded as a run artifact
+# and published to the `previews` branch) so you can see how it looks.
+on:
+  push:
+    branches-ignore: [previews]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to publish the screenshot to the previews branch
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # --update-goldens makes the capture test WRITE the screenshot instead of
+      # comparing pixels, so it never fails; the behaviour tests still score.
+      - name: Run tests (and render the screenshot)
+        id: tests
+        run: flutter test --update-goldens --reporter json > test-results.json
+
+      - name: Write grading summary
+        if: always()
+        run: |
+          if [ ! -s test-results.json ]; then
+            echo "## ❌ Tests did not run (build/install error)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          cat > summary.dart <<'EOF'
+          import 'dart:convert';
+          import 'dart:io';
+
+          void main() {
+            final names = <int, String>{};
+            final results = <int, String>{};
+            final hidden = <int>{};
+            for (final line in File('test-results.json').readAsLinesSync()) {
+              if (line.trim().isEmpty) continue;
+              dynamic e;
+              try {
+                e = jsonDecode(line);
+              } catch (_) {
+                continue;
+              }
+              if (e is! Map) continue;
+              switch (e['type']) {
+                case 'testStart':
+                  final t = e['test'] as Map;
+                  names[t['id'] as int] = t['name'] as String;
+                  break;
+                case 'testDone':
+                  results[e['testID'] as int] = e['result'] as String;
+                  if (e['hidden'] == true) hidden.add(e['testID'] as int);
+                  break;
+              }
+            }
+            // The `capture:` test is the screenshot camera, not a scored check.
+            final ids = names.keys
+                .where((id) => !hidden.contains(id))
+                .where((id) => !(names[id] ?? '').startsWith('capture:'))
+                .toList();
+            final passed =
+                ids.where((id) => results[id] == 'success').length;
+            final total = ids.length;
+            final out = StringBuffer();
+            out.writeln(
+                '## ${passed == total && total > 0 ? '✅' : '❌'} $passed / $total tests passed');
+            out.writeln();
+            out.writeln('| Result | Test |');
+            out.writeln('| --- | --- |');
+            for (final id in ids) {
+              final icon = results[id] == 'success' ? '✅' : '❌';
+              out.writeln('| $icon | ${names[id]} |');
+            }
+            out.writeln();
+            out.writeln('_A phone-framed screenshot of your screen is attached to this run (Artifacts) and on the `previews` branch._');
+            stdout.write(out.toString());
+          }
+          EOF
+          dart summary.dart >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload screenshot artifact
+        id: shot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot
+          path: test/screenshots/
+          if-no-files-found: ignore
+
+      - name: Link the screenshot in the run summary
+        if: always()
+        env:
+          ART_URL: ${{ steps.shot.outputs.artifact-url }}
+        run: |
+          shopt -s nullglob
+          shots=(test/screenshots/*.png)
+          {
+            echo ""
+            echo "### 📸 Screenshot of your screen"
+            if [ ${#shots[@]} -eq 0 ]; then
+              echo "_No screenshot was produced this run._"
+            else
+              if [ -n "${ART_URL:-}" ]; then
+                echo "- **[Download the screenshot]($ART_URL)** (this run's Artifacts)"
+              fi
+              echo "- Also published to the [\`previews\` branch](https://github.com/${GITHUB_REPOSITORY}/tree/previews) after a push to main."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish screenshot to the previews branch
+        if: success() && github.ref == 'refs/heads/main'
+        continue-on-error: true   # visibility extra; must never fail the Autograde
+        run: |
+          shopt -s nullglob
+          shots=(test/screenshots/*.png)
+          if [ ${#shots[@]} -eq 0 ]; then echo "no screenshots to publish"; exit 0; fi
+          ts=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+          tmp=$(mktemp -d)
+          for f in "${shots[@]}"; do
+            base=$(basename "${f%.png}")
+            cp "$f" "$tmp/${base}-mobile.png"   # -mobile so the gradebook picks it up
+          done
+          git config user.name "course-bot"
+          git config user.email "course-bot@users.noreply.github.com"
+          git checkout --orphan previews-tmp
+          git rm -rf . >/dev/null 2>&1 || true
+          git clean -fdx >/dev/null 2>&1 || true
+          mkdir -p "submission/$ts"
+          cp "$tmp"/*.png "submission/$ts/"
+          git add "submission/$ts"
+          git commit -m ":camera: Publish screenshot [skip ci]"
+          git push -f origin HEAD:previews
+          # Add a direct "view this image" link to the run summary.
+          {
+            echo ""
+            echo "### 🖼️ View your rendered screen"
+            for f in "$tmp"/*.png; do
+              b=$(basename "$f")
+              echo "- [\`$b\`](https://github.com/${GITHUB_REPOSITORY}/blob/previews/submission/$ts/$b)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,13 @@
+.dart_tool/
+.packages
+build/
+pubspec.lock
+.flutter-plugins
+.flutter-plugins-dependencies
+.env
+.env.*
+.claude/
+test-results.json
+summary.dart
+# Golden screenshots are produced by the grader, not committed here.
+test/screenshots/
